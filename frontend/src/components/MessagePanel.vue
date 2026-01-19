@@ -17,7 +17,7 @@
             allow-clear
             @compositionstart="isComposing = true"
             @compositionend="onCompositionEnd"
-            @input="onSearchInput"
+            @input="onInputChange"
             @clear="clearSearch"
           >
             <template #prefix>
@@ -27,9 +27,7 @@
           <template #overlay>
             <div class="search-results-dropdown">
               <a-spin v-if="searchLoading" />
-              <div v-else-if="searchResults.length === 0" class="empty-tip">
-                未找到相关消息
-              </div>
+              <EmptyState v-else-if="searchResults.length === 0" message="未找到相关消息" />
               <div
                 v-for="msg in searchResults"
                 :key="msg.id"
@@ -38,7 +36,7 @@
               >
                 <div class="result-sender">{{ msg.sender_name }}</div>
                 <div class="result-content" v-html="highlightSearchText(msg.content_text)"></div>
-                <div class="result-time">{{ formatTime(msg.created_at) }}</div>
+                <div class="result-time">{{ formatMessageTime(msg.created_at) }}</div>
               </div>
               <div v-if="searchTotal > searchResults.length" class="result-more">
                 共 {{ searchTotal }} 条结果
@@ -55,7 +53,7 @@
           {{ formatTimeSeparator(msg.created_at) }}
         </div>
         <div :data-message-id="msg.id" :class="['message-row', { mine: isMine(msg), 'target-message': msg.id === targetMessageId }]">
-          <a-avatar :size="36" :style="{ backgroundColor: isMine(msg) ? '#52c41a' : '#1677ff', flexShrink: 0 }">
+          <a-avatar :size="36" :style="{ backgroundColor: getMessageAvatarColor(isMine(msg)), flexShrink: 0 }">
             {{ msg.sender_name?.[0] || '?' }}
           </a-avatar>
         <div class="message-body">
@@ -74,13 +72,13 @@
           </template>
           <!-- 文本消息 -->
           <template v-else>
-            <div class="msg-bubble" v-html="highlightText(msg.content_text || '[非文本消息]')"></div>
+            <div class="msg-bubble" v-html="highlightKeywordText(msg.content_text || '[非文本消息]')"></div>
           </template>
-          <div class="msg-time">{{ formatTime(msg.created_at) }}</div>
+          <div class="msg-time">{{ formatMessageTime(msg.created_at) }}</div>
         </div>
         </div>
       </div>
-      <div v-if="!messages.length && !loading" class="empty-tip">暂无消息</div>
+      <EmptyState v-if="!messages.length && !loading" message="暂无消息" />
     </div>
   </div>
 </template>
@@ -89,8 +87,13 @@
 import { ref, watch, nextTick, computed } from 'vue'
 import { FileOutlined, SearchOutlined } from '@ant-design/icons-vue'
 import type { Message, Conversation } from '@/api'
-import { searchConversationMessages, type SearchMessageItem } from '@/api'
+import { searchConversationMessages, highlightText, type SearchMessageItem } from '@/api'
 import { useUserStore } from '@/stores/user'
+import { formatMessageTime, formatTimeSeparator } from '@/utils/time'
+import { getMessageAvatarColor } from '@/utils/avatar'
+import { useSearchDebounce } from '@/composables/useSearchDebounce'
+import { useScrollPagination } from '@/composables/useScrollPagination'
+import EmptyState from './EmptyState.vue'
 
 const props = defineProps<{
   messages: Message[]
@@ -114,12 +117,24 @@ const scrollRef = ref<HTMLElement>()
 const shouldScrollToBottom = ref(true)
 
 // Search state
-const searchKeyword = ref('')
 const searchResults = ref<SearchMessageItem[]>([])
 const searchLoading = ref(false)
 const searchTotal = ref(0)
-const isComposing = ref(false)
-let searchTimer: ReturnType<typeof setTimeout> | null = null
+
+const doSearch = async (keyword: string) => {
+  if (!keyword || !props.conversation) return
+
+  searchLoading.value = true
+  try {
+    const res = await searchConversationMessages(props.conversation.cid, keyword, 1, 20)
+    searchResults.value = res.items
+    searchTotal.value = res.total
+  } finally {
+    searchLoading.value = false
+  }
+}
+
+const { searchKeyword, isComposing, onInputChange, onCompositionEnd, clearSearch } = useSearchDebounce(doSearch)
 
 const showSearchResults = computed(() => searchKeyword.value.trim().length > 0)
 
@@ -162,33 +177,14 @@ watch(() => props.targetMessageId, (id) => {
 
 const isMine = (msg: Message) => msg.sender_id === userStore.user?.id
 
-const formatTime = (ts: number) => {
-  if (!ts) return ''
-  return new Date(ts).toLocaleString('zh-CN', {
-    year: 'numeric',
-    month: '2-digit',
-    day: '2-digit',
-    hour: '2-digit',
-    minute: '2-digit',
-  })
-}
+const { onScroll } = useScrollPagination(
+  () => emit('loadMore'),
+  () => emit('loadMoreAfter')
+)
 
-const onScroll = (e: Event) => {
-  const el = e.target as HTMLElement
-  if (el.scrollTop < 50) {
-    emit('loadMore')
-  }
-  if (el.scrollTop + el.clientHeight >= el.scrollHeight - 50) {
-    emit('loadMoreAfter')
-  }
-}
+const highlightKeywordText = (text: string) => highlightText(text, props.highlightKeyword || '')
 
-const highlightText = (text: string) => {
-  if (!props.highlightKeyword || !text) return text
-  const escaped = props.highlightKeyword.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
-  const regex = new RegExp(`(${escaped})`, 'gi')
-  return text.replace(regex, '<mark class="search-highlight">$1</mark>')
-}
+const highlightSearchText = (text: string) => highlightText(text, searchKeyword.value)
 
 const parseContentJson = (json: string) => {
   try {
@@ -205,56 +201,9 @@ const formatFileSize = (bytes?: number) => {
   return (bytes / 1024 / 1024).toFixed(1) + ' MB'
 }
 
-// Search methods
-const clearSearch = () => {
-  searchKeyword.value = ''
-  searchResults.value = []
-  searchTotal.value = 0
-  if (searchTimer) clearTimeout(searchTimer)
-}
-
-const doSearch = async () => {
-  const keyword = searchKeyword.value.trim()
-  if (!keyword || !props.conversation) return
-
-  searchLoading.value = true
-  try {
-    const res = await searchConversationMessages(props.conversation.cid, keyword, 1, 20)
-    searchResults.value = res.items
-    searchTotal.value = res.total
-  } finally {
-    searchLoading.value = false
-  }
-}
-
-const debouncedSearch = () => {
-  if (searchTimer) clearTimeout(searchTimer)
-  searchTimer = setTimeout(() => {
-    doSearch()
-  }, 300)
-}
-
-const onSearchInput = () => {
-  if (!isComposing.value) {
-    debouncedSearch()
-  }
-}
-
-const onCompositionEnd = () => {
-  isComposing.value = false
-  debouncedSearch()
-}
-
 const onSearchResultClick = (msg: SearchMessageItem) => {
   emit('searchAndJump', msg.id, searchKeyword.value, msg.created_at)
   clearSearch()
-}
-
-const highlightSearchText = (text: string) => {
-  if (!searchKeyword.value || !text) return text
-  const escaped = searchKeyword.value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
-  const regex = new RegExp(`(${escaped})`, 'gi')
-  return text.replace(regex, '<mark class="search-highlight">$1</mark>')
 }
 
 const shouldShowTimeSeparator = (msg: Message, index: number) => {
@@ -263,15 +212,6 @@ const shouldShowTimeSeparator = (msg: Message, index: number) => {
   if (!prevMsg) return false
   const timeDiff = msg.created_at - prevMsg.created_at
   return timeDiff > 1800000
-}
-
-const formatTimeSeparator = (ts: number) => {
-  return new Date(ts).toLocaleString('zh-CN', {
-    month: 'long',
-    day: 'numeric',
-    hour: '2-digit',
-    minute: '2-digit',
-  })
 }
 </script>
 

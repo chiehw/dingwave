@@ -27,7 +27,7 @@
 import { ref, watch, computed } from 'vue'
 import ConversationList from '@/components/ConversationList.vue'
 import MessagePanel from '@/components/MessagePanel.vue'
-import { fetchMessages, fetchMessagesAfter, type Message, type Conversation, type SearchAggregatedItem } from '@/api'
+import { fetchMessages, fetchMessagesAfter, createConversationFromSearch, type Message, type Conversation, type SearchAggregatedItem } from '@/api'
 import { useUserStore } from '@/stores/user'
 
 const userStore = useUserStore()
@@ -60,63 +60,37 @@ const onSelect = (item: Conversation) => {
   loadMessages(item.cid)
 }
 
-const onJumpToMessage = async (cid: string, messageId: number, keyword: string, conversation: SearchAggregatedItem, timestamp: number) => {
-  selectedCid.value = cid
-  selectedConversation.value = {
-    id: 0,
-    cid: conversation.cid,
-    type: conversation.type,
-    title: conversation.title,
-    is_top: false,
-    message_count: 0,
-    last_message_at: 0,
-    last_message_id: 0,
-    last_message_preview: '',
-    created_at: 0,
-  }
-  highlightKeyword.value = keyword
+function mergeAndSortMessages(beforeItems: Message[], afterItems: Message[]): Message[] {
+  const allMessages = [...beforeItems, ...afterItems]
+  const uniqueMessages = Array.from(new Map(allMessages.map(m => [m.id, m])).values())
+  uniqueMessages.sort((a, b) => a.created_at - b.created_at)
+  return uniqueMessages
+}
 
-  // 加载目标消息前后的上下文
+async function loadMessagesAroundTimestamp(cid: string, timestamp: number, messageId: number, keyword: string) {
   loading.value = true
   messages.value = []
   targetMessageId.value = messageId
+  highlightKeyword.value = keyword
 
   const beforeRes = await fetchMessages(cid, timestamp + 1)
   const afterRes = await fetchMessagesAfter(cid, timestamp, 3)
 
-  // 合并去重
-  const allMessages = [...beforeRes.items, ...afterRes.items]
-  const uniqueMessages = Array.from(new Map(allMessages.map(m => [m.id, m])).values())
-  uniqueMessages.sort((a, b) => a.created_at - b.created_at)
-
-  messages.value = uniqueMessages
+  messages.value = mergeAndSortMessages(beforeRes.items, afterRes.items)
   hasMore.value = beforeRes.has_more
   hasMoreAfter.value = afterRes.has_more
   loading.value = false
 }
 
+const onJumpToMessage = async (cid: string, messageId: number, keyword: string, conversation: SearchAggregatedItem, timestamp: number) => {
+  selectedCid.value = cid
+  selectedConversation.value = createConversationFromSearch(conversation)
+  await loadMessagesAroundTimestamp(cid, timestamp, messageId, keyword)
+}
+
 const onSearchAndJump = async (messageId: number, keyword: string, timestamp: number) => {
   if (!selectedConversation.value) return
-
-  highlightKeyword.value = keyword
-  targetMessageId.value = messageId
-
-  // 加载目标消息前后的上下文
-  loading.value = true
-  messages.value = []
-
-  const beforeRes = await fetchMessages(selectedCid.value, timestamp + 1)
-  const afterRes = await fetchMessagesAfter(selectedCid.value, timestamp, 3)
-
-  // 合并去重
-  const allMessages = [...beforeRes.items, ...afterRes.items]
-  const uniqueMessages = Array.from(new Map(allMessages.map(m => [m.id, m])).values())
-  uniqueMessages.sort((a, b) => a.created_at - b.created_at)
-
-  messages.value = uniqueMessages
-  hasMore.value = beforeRes.has_more
-  hasMoreAfter.value = afterRes.has_more
-  loading.value = false
+  await loadMessagesAroundTimestamp(selectedCid.value, timestamp, messageId, keyword)
 }
 
 const onTargetScrolled = () => {

@@ -2,10 +2,7 @@ package database
 
 import (
 	"database/sql"
-	"encoding/json"
 	"fmt"
-	"strconv"
-	"strings"
 
 	"dingtalk/internal/logger"
 
@@ -15,6 +12,7 @@ import (
 )
 
 func MigrateToMemory(dbPath string) (*gorm.DB, error) {
+	logger.Info("start migrating database")
 	db, err := openDB(dbPath)
 	if err != nil {
 		return nil, err
@@ -134,6 +132,8 @@ func migrateMessages(srcDB *sql.DB, destDB *gorm.DB) error {
 		tableNames = append(tableNames, t)
 	}
 
+	// 因为 tbmsg 有多个表，gorm 一次性执行的 SQL 长度有上限
+	// 为了避免上限，这里使用分片的方式执行
 	const batchSize = 1000
 	for _, tableName := range tableNames {
 		offset := 0
@@ -149,15 +149,14 @@ func migrateMessages(srcDB *sql.DB, destDB *gorm.DB) error {
 				var msg Message
 				var recallStatus int
 				if err := rows.Scan(&msg.ID, &msg.CID, &msg.SenderID, &msg.ContentType, &msg.ContentJson, &msg.CreatedAt, &recallStatus); err != nil {
-					rows.Close()
-					return err
+					return rows.Close()
 				}
 				if recallStatus > 0 {
 					msg.IsRecall = true
 				}
 				batch = append(batch, msg)
 			}
-			rows.Close()
+			_ = rows.Close()
 
 			if len(batch) == 0 {
 				break
@@ -189,6 +188,7 @@ func updateContentText(db *gorm.DB) error {
 		}
 
 		for i := range messages {
+			// 给每一种类型的消息增加纯文本字段
 			messages[i].ContentText = extractContentText(messages[i].ContentType, messages[i].ContentJson)
 		}
 
@@ -213,20 +213,11 @@ func updateSingleChatTitles(db *gorm.DB) error {
 		return err
 	}
 
+	// 单聊字段的 cid 格式为 uid1:uid2，需要替换回真实的用户名称
 	for i := range conversations {
-		parts := strings.Split(conversations[i].CID, ":")
-		if len(parts) != 2 {
+		otherUserID, err := GetOtherUserID(conversations[i].CID, currentUserID)
+		if err != nil {
 			continue
-		}
-
-		id1, _ := strconv.ParseInt(parts[0], 10, 64)
-		id2, _ := strconv.ParseInt(parts[1], 10, 64)
-
-		var otherUserID int64
-		if id1 == currentUserID {
-			otherUserID = id2
-		} else {
-			otherUserID = id1
 		}
 
 		var user User
@@ -246,27 +237,14 @@ func getCurrentUserID(db *gorm.DB) (int64, error) {
 
 	idCount := make(map[int64]int)
 	for _, conv := range conversations {
-		parts := strings.Split(conv.CID, ":")
-		if len(parts) == 2 {
-			if id, err := strconv.ParseInt(parts[0], 10, 64); err == nil {
-				idCount[id]++
-			}
-			if id, err := strconv.ParseInt(parts[1], 10, 64); err == nil {
-				idCount[id]++
-			}
+		id1, id2, ok := ParseCID(conv.CID)
+		if ok {
+			idCount[id1]++
+			idCount[id2]++
 		}
 	}
 
-	var currentUserID int64
-	maxCount := 0
-	for id, count := range idCount {
-		if count > maxCount {
-			maxCount = count
-			currentUserID = id
-		}
-	}
-
-	return currentUserID, nil
+	return findMostFrequentID(idCount), nil
 }
 
 func saveCurrentUser(db *gorm.DB) error {
@@ -295,6 +273,10 @@ func updateConversationStats(db *gorm.DB) error {
 		return err
 	}
 
+	// 利用已合并的 tbmsg 表计算以下数据
+	// 		单个会话的消息数量
+	//		最后消息发送时间
+	//		最后消息预览文本
 	for i := range conversations {
 		var count int64
 		if err := db.Model(&Message{}).Where("cid = ?", conversations[i].CID).Count(&count).Error; err != nil {
@@ -312,156 +294,6 @@ func updateConversationStats(db *gorm.DB) error {
 	return db.Save(&conversations).Error
 }
 
-func extractContentText(contentType MessageContentType, contentJson string) string {
-	var content map[string]interface{}
-	if err := json.Unmarshal([]byte(contentJson), &content); err != nil {
-		return ""
-	}
-
-	switch contentType {
-	case MessageContentTypeText:
-		if text, ok := content["text"].(string); ok {
-			return text
-		}
-	case MessageContentTypeImage:
-		if filename, ok := content["filename"].(string); ok {
-			return "[图片] " + filename
-		}
-		logger.Warn("Image content fallback to default, contentType=%d", contentType)
-		return "[图片]"
-	case MessageContentTypeDocument:
-		if filename, ok := content["filename"].(string); ok {
-			return "[文件] " + filename
-		}
-		return "[文件]"
-	case MessageContentTypeShareLink:
-		return extractAttachmentUrl(content, "[链接]")
-	case MessageContentTypeLink:
-		return extractFromAttachments(content, "b_tl", "[链接]", contentType)
-	case MessageContentTypeFileOld, MessageContentTypeFile:
-		return extractFromAttachments(content, "f_name", "[文件]", contentType)
-	case MessageContentTypeFolder:
-		return extractFromAttachments(content, "f_name", "[文件夹]", contentType)
-	case MessageContentTypeSticker:
-		return "[表情]"
-	case MessageContentTypeCard:
-		return "[名片]"
-	case MessageContentTypeVideo:
-		return extractFromAttachments(content, "title", "[视频]", contentType)
-	case MessageContentTypeShortVideo:
-		return "[短视频]"
-	case MessageContentTypeVideoCall:
-		return extractFromAttachments(content, "title", "[视频通话]", contentType)
-	case MessageContentTypeCalendar:
-		return "[日程]"
-	case MessageContentTypeVote:
-		return "[投票]"
-	case MessageContentTypeRobot:
-		return extractLastMessageI18n(content, "[群公告]", contentType)
-	case MessageContentTypeActionCard:
-		return extractLastMessageI18n(content, "[互动卡片]", contentType)
-	case MessageContentTypeMiniProgram:
-		return extractFromAttachments(content, "desc", "[小程序]", contentType)
-	}
-	return ""
-}
-
-func extractAttachmentUrl(content map[string]interface{}, fallback string) string {
-	attachments, ok := content["attachments"].([]interface{})
-	if !ok || len(attachments) == 0 {
-		return fallback
-	}
-	att, ok := attachments[0].(map[string]interface{})
-	if !ok {
-		return fallback
-	}
-	if url, ok := att["url"].(string); ok && url != "" {
-		return url
-	}
-	return fallback
-}
-
-func extractFromAttachments(content map[string]interface{}, field, fallback string, contentType MessageContentType) string {
-	attachments, ok := content["attachments"].([]interface{})
-	if !ok || len(attachments) == 0 {
-		logger.Warn("Content fallback to default, contentType=%d, reason=no attachments", contentType)
-		return fallback
-	}
-
-	att, ok := attachments[0].(map[string]interface{})
-	if !ok {
-		logger.Warn("Content fallback to default, contentType=%d, reason=invalid attachment", contentType)
-		return fallback
-	}
-
-	extStr, ok := att["extension"].(string)
-	if !ok {
-		logger.Warn("Content fallback to default, contentType=%d, reason=no extension", contentType)
-		return fallback
-	}
-
-	var ext map[string]interface{}
-	if err := json.Unmarshal([]byte(extStr), &ext); err != nil {
-		logger.Warn("Content fallback to default, contentType=%d, reason=invalid extension json", contentType)
-		return fallback
-	}
-
-	if val, ok := ext[field].(string); ok && val != "" {
-		return val
-	}
-
-	logger.Warn("Content fallback to default, contentType=%d, reason=field '%s' not found", contentType, field)
-	return fallback
-}
-
-func extractLastMessageI18n(content map[string]interface{}, fallback string, contentType MessageContentType) string {
-	attachments, ok := content["attachments"].([]interface{})
-	if !ok || len(attachments) == 0 {
-		logger.Warn("Content fallback to default, contentType=%d, reason=no attachments", contentType)
-		return fallback
-	}
-
-	att, ok := attachments[0].(map[string]interface{})
-	if !ok {
-		logger.Warn("Content fallback to default, contentType=%d, reason=invalid attachment", contentType)
-		return fallback
-	}
-
-	extStr, ok := att["extension"].(string)
-	if !ok {
-		logger.Warn("Content fallback to default, contentType=%d, reason=no extension", contentType)
-		return fallback
-	}
-
-	var ext map[string]interface{}
-	if err := json.Unmarshal([]byte(extStr), &ext); err != nil {
-		logger.Warn("Content fallback to default, contentType=%d, reason=invalid extension json", contentType)
-		return fallback
-	}
-
-	if val, ok := ext["interactiveCardLastMessage"].(string); ok && val != "" {
-		return val
-	}
-
-	i18nStr, ok := ext["LastMessageI18n"].(string)
-	if !ok {
-		logger.Warn("Content fallback to default, contentType=%d, reason=no LastMessageI18n or interactiveCardLastMessage", contentType)
-		return fallback
-	}
-
-	var i18n map[string]interface{}
-	if err := json.Unmarshal([]byte(i18nStr), &i18n); err != nil {
-		logger.Warn("Content fallback to default, contentType=%d, reason=invalid i18n json", contentType)
-		return fallback
-	}
-
-	if val, ok := i18n["zh_CN"].(string); ok && val != "" {
-		return val
-	}
-	logger.Warn("Content fallback to default, contentType=%d, reason=zh_CN not found", contentType)
-	return fallback
-}
-
 func openDB(dbPath string) (*sql.DB, error) {
 	db, err := sql.Open("sqlite3", dbPath)
 	if err != nil {
@@ -469,7 +301,7 @@ func openDB(dbPath string) (*sql.DB, error) {
 	}
 
 	if err := db.Ping(); err != nil {
-		db.Close()
+		_ = db.Close()
 		return nil, fmt.Errorf("failed to ping database: %w", err)
 	}
 

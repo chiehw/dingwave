@@ -46,11 +46,11 @@ export interface MessagesResponse {
   items: Message[]
 }
 
-export interface ConversationPageResponse {
+export interface PageResponse<T> {
   total: number
   page: number
   size: number
-  items: Conversation[]
+  items: T[]
 }
 
 export interface SearchAggregatedItem {
@@ -60,75 +60,68 @@ export interface SearchAggregatedItem {
   match_count: number
 }
 
-export interface SearchAggregatedResponse {
-  total: number
-  page: number
-  size: number
-  items: SearchAggregatedItem[]
+export interface SearchMessageItem extends Omit<Message, 'content_json'> {}
+
+async function apiFetch<T>(url: string): Promise<T> {
+  const response = await fetch(url)
+  return response.json()
 }
 
-export interface SearchMessageItem {
-  id: number
-  cid: string
-  sender_id: number
-  sender_name: string
-  content_type: number
-  content_text: string
-  created_at: number
-  is_recall: boolean
+export function fetchHome(limit = 5): Promise<HomeResponse> {
+  return apiFetch(`/api/conversations/home?limit=${limit}`)
 }
 
-export interface SearchConversationResponse {
-  total: number
-  page: number
-  size: number
-  items: SearchMessageItem[]
+export function fetchConversations(type: number, page = 1, size = 20): Promise<PageResponse<Conversation>> {
+  return apiFetch(`/api/conversations?type=${type}&page=${page}&size=${size}`)
 }
 
-export interface UserListResponse {
-  total: number
-  page: number
-  size: number
-  items: User[]
+export function fetchMessages(cid: string, before?: number): Promise<MessagesResponse> {
+  const url = before ? `/api/conversations/${cid}/messages?before=${before}` : `/api/conversations/${cid}/messages`
+  return apiFetch(url)
 }
 
-export const fetchHome = (limit = 5): Promise<HomeResponse> =>
-  fetch(`/api/conversations/home?limit=${limit}`).then((r) => r.json())
+export function fetchMessagesAfter(cid: string, after: number, size = 50): Promise<MessagesResponse> {
+  return apiFetch(`/api/conversations/${cid}/messages?after=${after}&size=${size}`)
+}
 
-export const fetchConversations = (
-  type: number,
-  page = 1,
-  size = 20
-): Promise<ConversationPageResponse> =>
-  fetch(`/api/conversations?type=${type}&page=${page}&size=${size}`).then((r) =>
-    r.json()
-  )
+export function searchMessages(keyword: string, page = 1, size = 20): Promise<PageResponse<SearchAggregatedItem>> {
+  return apiFetch(`/api/messages/search?q=${encodeURIComponent(keyword)}&page=${page}&size=${size}`)
+}
 
-export const fetchMessages = (cid: string, before?: number): Promise<MessagesResponse> =>
-  fetch(`/api/conversations/${cid}/messages${before ? `?before=${before}` : ''}`).then(
-    (r) => r.json()
-  )
+export function searchConversationMessages(cid: string, keyword: string, page = 1, size = 20): Promise<PageResponse<SearchMessageItem>> {
+  return apiFetch(`/api/conversations/${cid}/messages/search?q=${encodeURIComponent(keyword)}&page=${page}&size=${size}`)
+}
 
-export const fetchMessagesAfter = (cid: string, after: number, size = 50): Promise<MessagesResponse> =>
-  fetch(`/api/conversations/${cid}/messages?after=${after}&size=${size}`).then((r) => r.json())
+export function fetchUsers(page = 1, size = 50): Promise<PageResponse<User>> {
+  return apiFetch(`/api/users?page=${page}&size=${size}`)
+}
 
-export const searchMessages = (keyword: string, page = 1, size = 20): Promise<SearchAggregatedResponse> =>
-  fetch(`/api/messages/search?q=${encodeURIComponent(keyword)}&page=${page}&size=${size}`).then(
-    (r) => r.json()
-  )
+export function searchUsers(keyword: string): Promise<User[]> {
+  return apiFetch(`/api/users/search?q=${encodeURIComponent(keyword)}`)
+}
 
-export const searchConversationMessages = (
-  cid: string,
-  keyword: string,
-  page = 1,
-  size = 20
-): Promise<SearchConversationResponse> =>
-  fetch(
-    `/api/conversations/${cid}/messages/search?q=${encodeURIComponent(keyword)}&page=${page}&size=${size}`
-  ).then((r) => r.json())
+export function escapeRegex(text: string): string {
+  return text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+}
 
-export const fetchUsers = (page = 1, size = 50): Promise<UserListResponse> =>
-  fetch(`/api/users?page=${page}&size=${size}`).then((r) => r.json())
+export function highlightText(text: string, keyword: string): string {
+  if (!keyword || !text) return text
+  const escaped = escapeRegex(keyword)
+  const regex = new RegExp(`(${escaped})`, 'gi')
+  return text.replace(regex, '<mark class="search-highlight">$1</mark>')
+}
 
-export const searchUsers = (keyword: string): Promise<User[]> =>
-  fetch(`/api/users/search?q=${encodeURIComponent(keyword)}`).then((r) => r.json())
+export function createConversationFromSearch(item: SearchAggregatedItem): Conversation {
+  return {
+    id: 0,
+    cid: item.cid,
+    type: item.type,
+    title: item.title,
+    is_top: false,
+    message_count: 0,
+    last_message_at: 0,
+    last_message_id: 0,
+    last_message_preview: '',
+    created_at: 0,
+  }
+}

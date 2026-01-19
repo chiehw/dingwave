@@ -35,9 +35,7 @@
       <a-spin :spinning="loading || searchLoading" class="spin-container">
         <!-- 搜索聚合结果模式 -->
         <template v-if="viewMode === 'search-aggregated'">
-          <div v-if="searchResults.length === 0 && !searchLoading" class="empty-tip">
-            未找到相关消息
-          </div>
+          <EmptyState v-if="searchResults.length === 0 && !searchLoading" message="未找到相关消息" />
           <div
             v-for="item in searchResults"
             :key="item.cid"
@@ -65,7 +63,7 @@
           >
             <div class="msg-sender">{{ msg.sender_name }}</div>
             <div class="msg-content" v-html="highlightKeyword(msg.content_text)"></div>
-            <div class="msg-time">{{ formatTime(msg.created_at) }}</div>
+            <div class="msg-time">{{ formatTimestamp(msg.created_at) }}</div>
           </div>
           <div v-if="convSearchHasMore" class="load-more-spinner">
             <a-spin size="small" />
@@ -74,21 +72,14 @@
 
         <!-- 展开模式 -->
         <template v-else-if="expandedType !== null">
-          <div
+          <ConversationItem
             v-for="item in expandedList"
             :key="item.cid"
-            :class="['conv-item', { active: item.cid === selectedCid }]"
+            :conversation="item"
+            :is-active="item.cid === selectedCid"
+            :show-time="true"
             @click="$emit('select', item)"
-          >
-            <a-avatar :size="40" :style="{ backgroundColor: item.type === 2 ? '#87d068' : '#1677ff' }">
-              {{ item.title?.charAt(0) }}
-            </a-avatar>
-            <div class="conv-info">
-              <div class="conv-title">{{ item.title }}</div>
-              <div class="conv-preview">{{ item.last_message_preview }}</div>
-            </div>
-            <div class="conv-time">{{ formatTime(item.last_message_at) }}</div>
-          </div>
+          />
           <div v-if="expandHasMore" class="load-more-spinner">
             <a-spin size="small" />
           </div>
@@ -102,21 +93,14 @@
               <span class="section-count">{{ section.data?.total || 0 }}</span>
               <RightOutlined class="section-arrow" />
             </div>
-            <div
+            <ConversationItem
               v-for="item in section.data?.items || []"
               :key="item.cid"
-              :class="['conv-item', { active: item.cid === selectedCid }]"
+              :conversation="item"
+              :is-active="item.cid === selectedCid"
+              :show-time="true"
               @click="$emit('select', item)"
-            >
-              <a-avatar :size="40" :style="{ backgroundColor: item.type === 2 ? '#87d068' : '#1677ff' }">
-                {{ item.title?.charAt(0) }}
-              </a-avatar>
-              <div class="conv-info">
-                <div class="conv-title">{{ item.title }}</div>
-                <div class="conv-preview">{{ item.last_message_preview }}</div>
-              </div>
-              <div class="conv-time">{{ formatTime(item.last_message_at) }}</div>
-            </div>
+            />
           </div>
         </template>
       </a-spin>
@@ -131,11 +115,16 @@ import {
   fetchConversations,
   searchMessages,
   searchConversationMessages,
+  highlightText,
   type HomeResponse,
   type Conversation,
   type SearchAggregatedItem,
   type SearchMessageItem,
 } from '@/api'
+import { formatTimestamp } from '@/utils/time'
+import { useSearchDebounce } from '@/composables/useSearchDebounce'
+import ConversationItem from './ConversationItem.vue'
+import EmptyState from './EmptyState.vue'
 
 const props = defineProps<{
   homeData: HomeResponse | null
@@ -153,15 +142,27 @@ type ViewMode = 'default' | 'expanded' | 'search-aggregated' | 'search-conversat
 const viewMode = ref<ViewMode>('default')
 
 // 搜索状态
-const searchKeyword = ref('')
 const searchResults = ref<SearchAggregatedItem[]>([])
 const conversationSearchResults = ref<SearchMessageItem[]>([])
 const currentSearchConversation = ref<SearchAggregatedItem | null>(null)
 const searchLoading = ref(false)
-const isComposing = ref(false)
 const convSearchPage = ref(1)
 const convSearchTotal = ref(0)
-let searchTimer: ReturnType<typeof setTimeout> | null = null
+
+// 搜索相关方法
+const doSearch = async (keyword: string) => {
+  if (!keyword) {
+    exitSearch()
+    return
+  }
+  searchLoading.value = true
+  viewMode.value = 'search-aggregated'
+  const res = await searchMessages(keyword)
+  searchResults.value = res.items
+  searchLoading.value = false
+}
+
+const { searchKeyword, isComposing, onInputChange, onCompositionEnd, clearSearch: clearSearchInput } = useSearchDebounce(doSearch)
 
 // 展开模式状态
 const expandedType = ref<number | null>(null)
@@ -182,37 +183,6 @@ const expandLabel = computed(() => {
 })
 
 const expandHasMore = computed(() => expandedList.value.length < expandTotal.value)
-
-// 搜索相关方法
-const doSearch = async (keyword: string) => {
-  if (!keyword) {
-    exitSearch()
-    return
-  }
-  searchLoading.value = true
-  viewMode.value = 'search-aggregated'
-  const res = await searchMessages(keyword)
-  searchResults.value = res.items
-  searchLoading.value = false
-}
-
-const debouncedSearch = () => {
-  if (searchTimer) clearTimeout(searchTimer)
-  searchTimer = setTimeout(() => {
-    doSearch(searchKeyword.value.trim())
-  }, 300)
-}
-
-const onInputChange = () => {
-  if (!isComposing.value) {
-    debouncedSearch()
-  }
-}
-
-const onCompositionEnd = () => {
-  isComposing.value = false
-  debouncedSearch()
-}
 
 const enterConversationSearch = async (item: SearchAggregatedItem) => {
   currentSearchConversation.value = item
@@ -247,7 +217,7 @@ const backToAggregated = () => {
 
 const exitSearch = () => {
   viewMode.value = 'default'
-  searchKeyword.value = ''
+  clearSearchInput()
   searchResults.value = []
   conversationSearchResults.value = []
   currentSearchConversation.value = null
@@ -257,12 +227,7 @@ const jumpToMessage = (msg: SearchMessageItem) => {
   emit('jumpToMessage', msg.cid, msg.id, searchKeyword.value, currentSearchConversation.value!, msg.created_at)
 }
 
-const highlightKeyword = (text: string) => {
-  if (!searchKeyword.value || !text) return text
-  const escaped = searchKeyword.value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
-  const regex = new RegExp(`(${escaped})`, 'gi')
-  return text.replace(regex, '<mark class="search-highlight">$1</mark>')
-}
+const highlightKeyword = (text: string) => highlightText(text, searchKeyword.value)
 
 // 展开模式方法
 const expand = async (type: number) => {
@@ -286,12 +251,13 @@ const loadMoreExpand = async () => {
 
 const onScroll = (e: Event) => {
   const el = e.target as HTMLElement
-  if (el.scrollTop + el.clientHeight >= el.scrollHeight - 50) {
-    if (viewMode.value === 'expanded') {
-      loadMoreExpand()
-    } else if (viewMode.value === 'search-conversation') {
-      loadMoreConvSearch()
-    }
+  const nearBottom = el.scrollTop + el.clientHeight >= el.scrollHeight - 50
+  if (!nearBottom) return
+
+  if (viewMode.value === 'expanded') {
+    loadMoreExpand()
+  } else if (viewMode.value === 'search-conversation') {
+    loadMoreConvSearch()
   }
 }
 
@@ -299,17 +265,6 @@ const collapse = () => {
   expandedType.value = null
   viewMode.value = 'default'
   expandedList.value = []
-}
-
-const formatTime = (ts: number) => {
-  if (!ts) return ''
-  const date = new Date(ts)
-  const now = new Date()
-  const isToday = date.toDateString() === now.toDateString()
-  if (isToday) {
-    return date.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' })
-  }
-  return date.toLocaleDateString('zh-CN', { month: '2-digit', day: '2-digit' })
 }
 </script>
 

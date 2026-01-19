@@ -3,6 +3,7 @@ package server
 import (
 	"dingtalk/internal/api"
 	"dingtalk/internal/logger"
+	"dingtalk/internal/service"
 	"embed"
 	"io/fs"
 	"net/http"
@@ -29,16 +30,22 @@ func New(db *gorm.DB, distFS embed.FS) *echo.Echo {
 	e.Use(middleware.Recover())
 	e.Use(middleware.CORS())
 
-	handler := api.NewHandler(db)
+	conversationService := service.NewConversationService(db)
+	userService := service.NewUserService(db)
+	messageService := service.NewMessageService(db)
+
+	conversationHandler := api.NewConversationHandler(conversationService)
+	userHandler := api.NewUserHandler(userService)
+	messageHandler := api.NewMessageHandler(messageService, userService)
 
 	apiGroup := e.Group("/api")
-	apiGroup.GET("/conversations/home", handler.GetConversationsHome)
-	apiGroup.GET("/conversations", handler.GetConversations)
-	apiGroup.GET("/conversations/:cid/messages", handler.GetConversationMessages)
-	apiGroup.GET("/conversations/:cid/messages/search", handler.SearchConversationMessages)
-	apiGroup.GET("/messages/search", handler.SearchMessagesGlobal)
-	apiGroup.GET("/users", handler.GetUsers)
-	apiGroup.GET("/users/search", handler.SearchUsers)
+	apiGroup.GET("/conversations/home", conversationHandler.GetConversationsHome)
+	apiGroup.GET("/conversations", conversationHandler.GetConversations)
+	apiGroup.GET("/conversations/:cid/messages", messageHandler.GetConversationMessages)
+	apiGroup.GET("/conversations/:cid/messages/search", messageHandler.SearchConversationMessages)
+	apiGroup.GET("/messages/search", messageHandler.SearchMessagesGlobal)
+	apiGroup.GET("/users", userHandler.GetUsers)
+	apiGroup.GET("/users/search", userHandler.SearchUsers)
 
 	distSubFS, _ := fs.Sub(distFS, "dist")
 	e.GET("/*", echo.WrapHandler(http.FileServer(http.FS(distSubFS))))

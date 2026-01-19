@@ -1,0 +1,7 @@
+node_modules/
+.claude/
+.vscode/
+.DS_Store
+releases/
+dist/
+.idea/

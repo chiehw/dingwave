@@ -18,9 +18,7 @@ var distFS embed.FS
 
 func main() {
 	dbPath := flag.String("d", "", "database file path")
-	flag.StringVar(dbPath, "database", "", "database file path")
 	port := flag.String("p", "8080", "server port")
-	flag.StringVar(port, "port", "8080", "server port")
 	flag.Parse()
 
 	if *dbPath == "" {
