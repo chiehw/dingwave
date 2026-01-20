@@ -23,6 +23,7 @@ func main() {
 	port := flag.String("p", "8080", "server port")
 	keyUserID := flag.String("k", "", "user ID for database decryption (optional)")
 	outputPath := flag.String("o", "", "output path for decrypted database")
+	token := flag.String("token", "", "DingTalk account token for image download (optional)")
 	flag.Parse()
 
 	if *dbPath == "" {
@@ -71,6 +72,12 @@ func main() {
 	db, err := database.MigrateToMemory(finalDBPath)
 	if err != nil {
 		logger.Fatal("failed to migrate database: %v", err)
+	}
+
+	if *token != "" {
+		if err := database.DownloadImages(db, *token); err != nil {
+			logger.Error("failed to download images: %v", err)
+		}
 	}
 
 	e := server.New(db, distFS)

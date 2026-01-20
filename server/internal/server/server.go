@@ -2,11 +2,15 @@ package server
 
 import (
 	"dingtalk/internal/api"
+	"dingtalk/internal/database"
 	"dingtalk/internal/logger"
 	"dingtalk/internal/service"
 	"embed"
+	"fmt"
 	"io/fs"
 	"net/http"
+	"os"
+	"path/filepath"
 	"time"
 
 	"github.com/labstack/echo/v4"
@@ -46,6 +50,15 @@ func New(db *gorm.DB, distFS embed.FS) *echo.Echo {
 	apiGroup.GET("/messages/search", messageHandler.SearchMessagesGlobal)
 	apiGroup.GET("/users", userHandler.GetUsers)
 	apiGroup.GET("/users/search", userHandler.SearchUsers)
+
+	var currentUser database.CurrentUser
+	if err := db.First(&currentUser).Error; err == nil {
+		homeDir, err := os.UserHomeDir()
+		if err == nil {
+			staticPath := filepath.Join(homeDir, ".dingwave", fmt.Sprintf("%d", currentUser.ID))
+			e.Static("/static", staticPath)
+		}
+	}
 
 	distSubFS, _ := fs.Sub(distFS, "dist")
 	e.GET("/*", echo.WrapHandler(http.FileServer(http.FS(distSubFS))))

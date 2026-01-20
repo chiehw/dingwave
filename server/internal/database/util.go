@@ -9,6 +9,11 @@ import (
 	"dingtalk/internal/logger"
 )
 
+type ImageInfo struct {
+	URL      string
+	Filename string
+}
+
 func ParseCID(cid string) (id1, id2 int64, ok bool) {
 	parts := strings.Split(cid, ":")
 	if len(parts) != 2 {
@@ -196,4 +201,24 @@ func extractI18nMessage(content map[string]any, primaryField, i18nField, locale,
 	}
 	logger.Warn("Content fallback to default, contentType=%d, reason=%s not found", contentType, locale)
 	return fallback
+}
+
+func extractImageInfo(contentJson string) (ImageInfo, bool) {
+	var content map[string]any
+	if err := json.Unmarshal([]byte(contentJson), &content); err != nil {
+		return ImageInfo{}, false
+	}
+
+	url, ok := content["url"].(string)
+	if !ok || url == "" || !strings.Contains(url, "down.dingtalk.com") {
+		return ImageInfo{}, false
+	}
+
+	parts := strings.Split(url, "/")
+	if len(parts) == 0 {
+		return ImageInfo{}, false
+	}
+	filename := parts[len(parts)-1]
+
+	return ImageInfo{URL: url, Filename: filename}, true
 }

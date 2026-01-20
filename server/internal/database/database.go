@@ -3,7 +3,10 @@ package database
 import (
 	"database/sql"
 	"fmt"
+	"os"
+	"path/filepath"
 
+	"dingtalk/internal/downloader"
 	"dingtalk/internal/logger"
 
 	"github.com/glebarez/sqlite"
@@ -375,3 +378,59 @@ func logStatistics(db *gorm.DB) error {
 
 	return nil
 }
+
+func DownloadImages(db *gorm.DB, token string) error {
+	if token == "" {
+		return nil
+	}
+
+	logger.Info("Image download enabled with token")
+
+	var currentUser CurrentUser
+	if err := db.First(&currentUser).Error; err != nil {
+		return fmt.Errorf("failed to get current user: %w", err)
+	}
+
+	var messages []Message
+	if err := db.Where("content_type = ?", MessageContentTypeImage).Find(&messages).Error; err != nil {
+		return fmt.Errorf("failed to query image messages: %w", err)
+	}
+
+	if len(messages) == 0 {
+		logger.Info("No image messages found")
+		return nil
+	}
+
+	homeDir, err := os.UserHomeDir()
+	if err != nil {
+		return fmt.Errorf("failed to get home directory: %w", err)
+	}
+
+	baseDir := filepath.Join(homeDir, ".dingwave", fmt.Sprintf("%d", currentUser.ID), "ddmedia")
+
+	var tasks []downloader.DownloadTask
+	for _, msg := range messages {
+		info, ok := extractImageInfo(msg.ContentJson)
+		if !ok {
+			continue
+		}
+
+		savePath := filepath.Join(baseDir, info.Filename)
+		tasks = append(tasks, downloader.DownloadTask{
+			URL:      info.URL,
+			SavePath: savePath,
+		})
+	}
+
+	if len(tasks) == 0 {
+		logger.Info("No images to download")
+		return nil
+	}
+
+	logger.Info("Starting download of %d images", len(tasks))
+	downloader.DownloadImagesParallel(tasks, token, 10)
+	logger.Info("Image download completed")
+
+	return nil
+}
+

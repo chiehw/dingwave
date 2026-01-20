@@ -59,8 +59,19 @@
         <div class="message-body">
           <div class="msg-sender">{{ msg.sender_name }}</div>
           <!-- 图片消息 -->
-          <template v-if="msg.content_type === 2 && !parseContentJson(msg.content_json)?.url?.includes('down.dingtalk.com')">
-            <a-image :src="parseContentJson(msg.content_json)?.url" :width="200" />
+          <template v-if="msg.content_type === 2">
+            <div class="image-container">
+              <a-image
+                v-if="!imageErrors[msg.id]"
+                :src="transformImageUrl(parseContentJson(msg.content_json)?.url)"
+                :width="200"
+                @error="imageErrors[msg.id] = true"
+              />
+              <div v-else class="image-error">
+                <FileOutlined />
+                <span>{{ parseContentJson(msg.content_json)?.filename || '图片加载失败' }}</span>
+              </div>
+            </div>
           </template>
           <!-- 文件消息 -->
           <template v-else-if="msg.content_type === 4">
@@ -115,6 +126,7 @@ const emit = defineEmits<{
 const userStore = useUserStore()
 const scrollRef = ref<HTMLElement>()
 const shouldScrollToBottom = ref(true)
+const imageErrors = ref<Record<number, boolean>>({})
 
 // Search state
 const searchResults = ref<SearchMessageItem[]>([])
@@ -141,6 +153,7 @@ const showSearchResults = computed(() => searchKeyword.value.trim().length > 0)
 watch(() => props.conversation, () => {
   shouldScrollToBottom.value = true
   clearSearch()
+  imageErrors.value = {}
 })
 
 watch(() => props.messages, () => {
@@ -212,6 +225,11 @@ const shouldShowTimeSeparator = (msg: Message, index: number) => {
   if (!prevMsg) return false
   const timeDiff = msg.created_at - prevMsg.created_at
   return timeDiff > 1800000
+}
+
+const transformImageUrl = (url: string | undefined): string => {
+  if (!url) return ''
+  return url.replace(/^https?:\/\/down\.dingtalk\.com\//, 'http://localhost:8080/static/')
 }
 </script>
 
@@ -396,5 +414,20 @@ const shouldShowTimeSeparator = (msg: Message, index: number) => {
   font-size: 12px;
   color: rgba(128, 128, 128, 0.6);
   flex-shrink: 0;
+}
+.image-container {
+  display: inline-flex;
+  flex-direction: column;
+  max-width: 200px;
+}
+.image-error {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 12px;
+  background: rgba(128, 128, 128, 0.1);
+  border-radius: 8px;
+  color: rgba(128, 128, 128, 0.8);
+  font-size: 14px;
 }
 </style>
