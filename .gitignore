@@ -1,7 +1,14 @@
 node_modules/
+.env
 .claude/
 .vscode/
 .DS_Store
 releases/
 dist/
 .idea/
+
+*.db
+*.db-shm
+*.db-wal
+
+dingwave

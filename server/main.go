@@ -7,6 +7,8 @@ import (
 	"io"
 	"os"
 	"os/signal"
+	"path/filepath"
+	"strings"
 	"time"
 
 	"dingtalk/internal/crypto"
@@ -14,22 +16,45 @@ import (
 	"dingtalk/internal/logger"
 	"dingtalk/internal/server"
 
+	"github.com/joho/godotenv"
 	"gorm.io/gorm"
 )
 
 //go:embed dist
 var distFS embed.FS
 
+// loadEnvFiles 从仓库根或当前目录加载 .env（后加载的键覆盖先加载的，便于在仓库根覆盖 server/ 旁的配置）。
+func loadEnvFiles() {
+	_ = godotenv.Load(filepath.Join("..", ".env"))
+	_ = godotenv.Load(".env")
+}
+
+func envString(key string) string {
+	return strings.TrimSpace(os.Getenv(key))
+}
+
+func envBool(key string) bool {
+	v := strings.ToLower(envString(key))
+	return v == "1" || v == "true" || v == "yes" || v == "on"
+}
+
 func main() {
-	dbPath := flag.String("d", "", "database file path")
-	port := flag.String("p", "8080", "server port")
-	keyUserID := flag.String("k", "", "解密密钥：V2 为目录 uid；V3 为 real_uid（见 log 中 real_uid，勿用目录名当 uid）")
-	salt := flag.String("salt", "", "V3：user_config JSON 里的 salt/slt，与 -k 组合派生密钥")
-	userConfig := flag.String("userconfig", "", "V3：user_config 文件路径（整文件 Base64），与 -k 的 real_uid 配合")
-	outputPath := flag.String("o", "", "output path for decrypted database")
-	mergedOut := flag.String("merged-out", "", "合并后的 SQLite 路径（含 conversations/messages 等表）；供离线脚本与 Agent 技能使用")
-	exportOnly := flag.Bool("export-only", false, "仅写入 -merged-out 后退出（不启动 HTTP）；须与 -merged-out 同时使用")
-	token := flag.String("token", "", "DingTalk account token for image download (optional)")
+	loadEnvFiles()
+
+	defaultPort := envString("DINGWAVE_P")
+	if defaultPort == "" {
+		defaultPort = "8080"
+	}
+
+	dbPath := flag.String("d", envString("DINGWAVE_D"), "database file path")
+	port := flag.String("p", defaultPort, "server port")
+	keyUserID := flag.String("k", envString("DINGWAVE_K"), "解密密钥：V2 为目录 uid；V3 为 real_uid（见 log 中 real_uid，勿用目录名当 uid）")
+	salt := flag.String("salt", envString("DINGWAVE_SALT"), "V3：user_config JSON 里的 salt/slt，与 -k 组合派生密钥")
+	userConfig := flag.String("userconfig", envString("DINGWAVE_USERCONFIG"), "V3：user_config 文件路径（整文件 Base64），与 -k 的 real_uid 配合")
+	outputPath := flag.String("o", envString("DINGWAVE_O"), "output path for decrypted database")
+	mergedOut := flag.String("merged-out", envString("DINGWAVE_MERGED_OUT"), "合并后的 SQLite 路径（含 conversations/messages 等表）；供离线脚本与 Agent 技能使用")
+	exportOnly := flag.Bool("export-only", envBool("DINGWAVE_EXPORT_ONLY"), "仅写入 -merged-out 后退出（不启动 HTTP）；须与 -merged-out 同时使用")
+	token := flag.String("token", envString("DINGWAVE_TOKEN"), "DingTalk account token for image download (optional)")
 	flag.Parse()
 
 	if *dbPath == "" {
