@@ -24,18 +24,33 @@
 
 ---
 
-## 3. 合并库来源（实现前提，与技能同周期交付）
+## 3. 合并库来源与技能内自动检查
 
-仓库需增加一种**生成合并库文件**的方式（名称可任选其一，以下为建议）：
+### 3.1 `main` 参数（已实现）
 
-- 建议在 `server/main.go` 增加参数，例如 **`-merged-out <path>`**：在现有解密/校验/迁移逻辑之后，除内存服务外（或在不启动 HTTP 的模式下），将 **与当前 `MigrateToMemory` 相同结果** 写入 **文件 DSN** 的 SQLite（`gorm` + `glebarez/sqlite` 与现有一致），使该文件包含下列表及列。  
-- 若用户未传 `-merged-out`，行为与现在一致（仅内存），不强制写盘。
+- **`-merged-out <path>`**：迁移目标为**文件型 SQLite**（与内存迁移同一套流水线），供离线脚本只读打开；未指定时仍为 **`:memory:`**，行为与历史一致。
+- **`-export-only`**：必须与 `-merged-out` 同时使用；写完合并库后**直接退出**，不启动 HTTP、不阻塞在 Ctrl+C。
 
-技能与脚本侧约定环境变量：
+典型离线导出命令：
 
-- **`DINGWAVE_DB`**（必填）：合并库 SQLite 文件的绝对或相对路径。
+```text
+dingwave -d <源库> <解密参数…> -merged-out <合并库路径> -export-only
+```
 
-可选：若将来支持「只导出、不监听端口」，可在 spec 实现阶段用同一 flag 组合 `Ctrl+C` 前已写出文件描述清楚即可。
+### 3.2 技能内自动检查与调用
+
+路径：`.agents/skills/dingwave-messages/scripts/ensure_merged.py`。
+
+- **检查**：默认合并库为技能目录下 `cache/merged.db`（可用 `DINGWAVE_MERGED_DB` 覆盖）；用只读 SQLite 探测是否存在 **`messages` 表**。
+- **判定需重建**：合并库无效，或 **`DINGWAVE_SOURCE_DB` 指向的源文件**修改时间新于合并库。
+- **自动调用**：在需重建且已配置 `DINGWAVE_SOURCE_DB`、`DINGWAVE_EXTRA_FLAGS`（与命令行 `-k`/`-salt`/`-userconfig` 等一致）时，执行  
+  `{DINGWAVE_BIN} -d … -merged-out … -export-only`。  
+  `DINGWAVE_BIN` 未设置时，优先使用**仓库根**下可执行的 `./dingwave`，否则用 PATH。
+- **Agent 流程**：查消息前先运行 `python3 scripts/ensure_merged.py`，将脚本 **stdout 最后一行**（合并库绝对路径）作为 **`DINGWAVE_DB`** 或 `dwmsg.py --db` 传入。
+
+### 3.3 查询脚本环境变量
+
+- **`DINGWAVE_DB`**：`dwmsg.py` 等只读查询使用的合并库路径；通常由 `ensure_merged.py` 成功后的输出决定。
 
 ---
 
@@ -117,9 +132,12 @@
 
 ```text
 .agents/skills/dingwave-messages/
-├── SKILL.md              # 元数据 + 环境变量、合并库生成方式、SQL 语义索引
+├── SKILL.md              # 元数据 + ensure 流程、环境变量、SQL 语义索引
+├── cache/                # 默认放 merged.db（*.db 已被 .gitignore）
+│   └── .gitkeep
 └── scripts/
-    └── dwmsg.py          # Python 3：sqlite3、json、argparse（标准库）
+    ├── ensure_merged.py  # 检查/自动调用 -merged-out -export-only
+    └── dwmsg.py          # Python 3：sqlite3、json、argparse（待实现）
 ```
 
 ---
@@ -147,15 +165,15 @@
 
 ## 8. `SKILL.md` 内容要点
 
-**`description`**：说明在已存在 **合并库 SQLite**（由 Dingwave `-merged-out` 或等价方式生成）时，用 `dwmsg.py` 离线查询会话与消息；触发词含：对话列表、`cid`、日志 URL、关键字、前后文、不启动服务。
+**`description`**：说明通过 **`ensure_merged.py` 检查并必要时自动调用** `dingwave -merged-out -export-only` 生成合并库，再用 `dwmsg.py`（或 sqlite3）离线查询；触发词含：对话列表、`cid`、merged-out、日志 URL、关键字、前后文。
 
 **正文**：
 
-1. 必须先有合并库路径；如何生成（指向 README 或 `main` 帮助中的 `-merged-out`）。  
-2. 设置 `DINGWAVE_DB` 或 `--db`。  
-3. 工作流示例与 HTTP 版相同，仅将「服务已启动」改为「合并库已生成」。  
-4. 明确禁止假设磁盘解密原库可直接当 `DINGWAVE_DB`（除非未来官方支持，当前不支持）。  
-5. 分页与搜索语义以本节 spec 为准，与 `message_service` / `conversation_service` 一致。
+1. 查库前先执行 `scripts/ensure_merged.py`，用其 stdout 设置 `DINGWAVE_DB`；缺环境变量时说明需配置 `DINGWAVE_SOURCE_DB` / `DINGWAVE_EXTRA_FLAGS`。  
+2. 说明 `-merged-out` 与 `-export-only` 的组合及与起服务共用 `-merged-out` 时的注意点。  
+3. 工作流：ensure → `dwmsg.py`（或 sqlite3 只读）。  
+4. 明确禁止将未合并的解密原库当作 `DINGWAVE_DB`。  
+5. 分页与搜索语义以本节 spec 为准。
 
 ---
 
@@ -171,12 +189,13 @@
 
 **本期包含**：
 
-1. Go 侧：**`-merged-out`（或等价）** 生成合并库文件。  
-2. `.agents/skills/dingwave-messages/`：`SKILL.md` + `scripts/dwmsg.py`。  
+1. Go 侧：`-merged-out`、`-export-only`，以及 `database.MigrateToMergedFile` / 共用 `migrateFromSource`。  
+2. `.agents/skills/dingwave-messages/`：`SKILL.md`、`scripts/ensure_merged.py`、`cache/.gitkeep`。  
+3. `scripts/dwmsg.py`（查询子命令，可与 ensure 分步交付）。
 
-**默认不改 README**；若补充一行说明合并库与技能，需用户单独提出。
+**默认不改 README**；若补充说明合并库与技能，需用户单独提出。
 
-**后续可选**：只导出模式、大文本分页策略、`content_json` 摘要。
+**后续可选**：大文本分页策略、`content_json` 摘要、`dwmsg.py` 全量子命令。
 
 ---
 
@@ -185,4 +204,4 @@
 - 已说明「不能直连未合并解密库」的原因与数据流。  
 - 查询语义与现有 Go 服务对齐。  
 - 技能路径：仓库内 `.agents/skills/dingwave-messages/`。  
-- 脚本在技能目录 `scripts/` 内。
+- `ensure_merged.py` 与 `SKILL.md` 已描述自动检查与调用 `dingwave` 的流程及环境变量。

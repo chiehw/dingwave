@@ -14,59 +14,70 @@ import (
 	gormlogger "gorm.io/gorm/logger"
 )
 
+// MigrateToMemory 将解密后的钉钉库迁入内存 SQLite（与历史行为一致）。
 func MigrateToMemory(dbPath string) (*gorm.DB, error) {
+	return migrateFromSource(dbPath, "")
+}
+
+// MigrateToMergedFile 将解密后的钉钉库迁入文件型 SQLite（供离线脚本只读打开）。
+// mergedOutPath 会先尝试删除已存在文件，再创建新库。
+func MigrateToMergedFile(dbPath, mergedOutPath string) (*gorm.DB, error) {
+	return migrateFromSource(dbPath, mergedOutPath)
+}
+
+func migrateFromSource(dbPath, mergedOutPath string) (*gorm.DB, error) {
 	logger.Info("start migrating database")
 	db, err := openDB(dbPath)
 	if err != nil {
 		return nil, err
 	}
 
-	memDB, err := createMemoryDB()
+	destDB, err := openDestDB(mergedOutPath)
 	if err != nil {
 		return nil, err
 	}
 
 	// 迁移 tbuser_profile_v2
-	if err := migrateUsers(db, memDB); err != nil {
+	if err := migrateUsers(db, destDB); err != nil {
 		return nil, fmt.Errorf("failed to migrate users: %w", err)
 	}
 
 	// 迁移 tbconversation
-	if err := migrateConversations(db, memDB); err != nil {
+	if err := migrateConversations(db, destDB); err != nil {
 		return nil, fmt.Errorf("failed to migrate conversations: %w", err)
 	}
 
 	// 合并与迁移钉钉数据库中的多个 tbmessage 表
-	if err := migrateMessages(db, memDB); err != nil {
+	if err := migrateMessages(db, destDB); err != nil {
 		return nil, fmt.Errorf("failed to migrate messages: %w", err)
 	}
 
 	// 更新消息内容文本
-	if err := updateContentText(memDB); err != nil {
+	if err := updateContentText(destDB); err != nil {
 		return nil, fmt.Errorf("failed to update content text: %w", err)
 	}
 
 	// 更新单聊会话标题
-	if err := updateSingleChatTitles(memDB); err != nil {
+	if err := updateSingleChatTitles(destDB); err != nil {
 		return nil, fmt.Errorf("failed to update single chat titles: %w", err)
 	}
 
 	// 保存当前用户信息
-	if err := saveCurrentUser(memDB); err != nil {
+	if err := saveCurrentUser(destDB); err != nil {
 		return nil, fmt.Errorf("failed to save current user: %w", err)
 	}
 
 	// 更新会话统计信息
-	if err := updateConversationStats(memDB); err != nil {
+	if err := updateConversationStats(destDB); err != nil {
 		return nil, fmt.Errorf("failed to update conversation stats: %w", err)
 	}
 
 	// 输出统计信息
-	if err := logStatistics(memDB); err != nil {
+	if err := logStatistics(destDB); err != nil {
 		logger.Warn("failed to log statistics: %v", err)
 	}
 
-	return memDB, nil
+	return destDB, nil
 }
 
 func migrateUsers(srcDB *sql.DB, destDB *gorm.DB) error {
@@ -320,13 +331,26 @@ func ValidateDB(dbPath string) error {
 	return nil
 }
 
-func createMemoryDB() (*gorm.DB, error) {
-	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{
+// openDestDB 创建合并库目标：mergedOutPath 为空时用内存；否则用文件路径（覆盖已有文件）。
+func openDestDB(mergedOutPath string) (*gorm.DB, error) {
+	dsn := ":memory:"
+	if mergedOutPath != "" {
+		abs, err := filepath.Abs(mergedOutPath)
+		if err != nil {
+			return nil, fmt.Errorf("resolve merged db path: %w", err)
+		}
+		if err := os.Remove(abs); err != nil && !os.IsNotExist(err) {
+			return nil, fmt.Errorf("remove existing merged db: %w", err)
+		}
+		dsn = abs
+	}
+
+	db, err := gorm.Open(sqlite.Open(dsn), &gorm.Config{
 		Logger: gormlogger.Default.LogMode(gormlogger.Silent),
 	})
 
 	if err != nil {
-		return nil, fmt.Errorf("failed to create memory database: %w", err)
+		return nil, fmt.Errorf("failed to open destination database: %w", err)
 	}
 
 	if err := db.AutoMigrate(
