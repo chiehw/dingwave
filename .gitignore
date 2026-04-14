@@ -12,3 +12,5 @@ dist/
 *.db-wal
 
 dingwave
+
+__pycache__/

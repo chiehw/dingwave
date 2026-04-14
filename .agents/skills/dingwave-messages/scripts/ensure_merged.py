@@ -59,10 +59,12 @@ def default_merged_path() -> Path:
 
 
 def find_repo_root(start: Path) -> Path | None:
-    """向上找到含有 go.mod 的目录，作为 dingwave 仓库根。"""
+    """向上找到 dingwave 仓库根（含 go.mod；也支持 go.mod 仅在 server/ 下的布局）。"""
     p = start.resolve()
     for _ in range(12):
         if (p / "go.mod").is_file():
+            return p
+        if (p / "server" / "go.mod").is_file():
             return p
         if p == p.parent:
             break
