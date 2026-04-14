@@ -44,10 +44,10 @@ V3 密钥派生（实现与公开逆向一致，供排错）：`password = real_
 C:\Users\{你的Windows用户名}\AppData\Roaming\DingTalk\{用户目录标识}_v3\DBFiles\dingtalk.db
 ```
 
-示例（仅说明结构，请替换为你本机用户名与目录名）：
+示例（仅说明结构，请把占位符替换为你本机实际用户名与 `_v3` 目录名前缀）：
 
 ```text
-C:\Users\19079\AppData\Roaming\DingTalk\fcd904a4e78405a35634_v3\DBFiles\dingtalk.db
+C:\Users\你的Windows用户名\AppData\Roaming\DingTalk\你的目录标识_v3\DBFiles\dingtalk.db
 ```
 
 同目录下还会有 **`user_config`**（与 `DBFiles` 同级，在 `_v3` 根目录），解密 V3 库时需要配合使用。
