@@ -18,11 +18,21 @@ description: >-
 
 | 变量 | 含义 |
 |------|------|
-| `DINGWAVE_SOURCE_DB` | 与 `dingwave -d` 相同（加密库或明文库路径） |
-| `DINGWAVE_EXTRA_FLAGS` | 解密/密钥参数，一行字符串，用 **shell 风格引号** 包住含空格的项；脚本用 `shlex` 拆成 argv。例：`-k 123456 -salt abc` 或带 `-userconfig` |
+| `DINGWAVE_SOURCE_DB` | 与 `dingwave -d` 相同（加密库或明文库路径）；**可不设**：此时使用仓库根 `.env` 里的 `DINGWAVE_D`（与直接运行 `dingwave` 一致） |
+| `DINGWAVE_EXTRA_FLAGS` | 可选；仅在**未**用 `.env` 提供 `-k`/`-userconfig` 等时需要。一行字符串，`shlex` 拆成 argv |
 | `DINGWAVE_MERGED_DB` | 合并库输出路径（可选；不设则用 `cache/merged.db`） |
 | `DINGWAVE_BIN` | `dingwave` 可执行文件路径（可选；不设则先尝试**仓库根**下 `./dingwave`，再用 PATH） |
 | `DINGWAVE_DB` | 给 `dwmsg.py` 等查询脚本用的库路径；**建议在 ensure 成功后设为 ensure 打印的路径** |
+
+### 2.1 与仓库根 `.env` 的关系（支持）
+
+- 项目已在 `server/main.go` 用 **godotenv** 加载仓库根 `.env`（以及从 `server/` 启动时的 `../.env`）。变量名见仓库根 **`.env.example`**（`DINGWAVE_D`、`DINGWAVE_K`、`DINGWAVE_USERCONFIG` 等）。
+- **`ensure_merged.py` 会**：
+  1. 定位含 `go.mod` 的仓库根；
+  2. 若存在 `仓库根/.env`，用标准库**轻量解析**注入 `os.environ`（**不覆盖**已在 shell 里 export 的键，与 godotenv 一致）；
+  3. 调用 `dingwave` 时 **`cwd` 固定为仓库根**，因此子进程同样能加载该 `.env`；
+  4. 源库路径：`DINGWAVE_SOURCE_DB` **或**（注入后的）`DINGWAVE_D`；相对路径按**仓库根**解析。
+- 因此：**解密参数可以只维护在 `.env` 里**，不必再给技能单独配一套 `DINGWAVE_EXTRA_FLAGS`（仍保留该变量用于临时覆盖或未提交 `.env` 的场景）。
 
 ## 3. 标准流程（Agent 每轮查消息前执行）
 
